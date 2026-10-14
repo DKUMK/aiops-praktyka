@@ -40,7 +40,19 @@ Dopisz wymagania:
 - hasło do bazy z istniejącego Secretu (nazwa z chartu), nie wpisane jawnie,
 - wynik zapisz do `lab01b/dobry.yaml`.
 
-### A3. Walidacja na serwerze
+### A3. Co model wymyślił?
+
+Porównaj miejsca, w których model musi znać Twoje środowisko:
+
+```bash
+grep -niE 'image:|namespace:|password|port|path:' lab01b/zly.yaml lab01b/dobry.yaml
+```
+
+Przy każdej linii z `zly.yaml` zapytaj: skąd model to wziął? Obraz, namespace, port, ścieżka health checka i hasło nie wynikają z promptu, więc model je zgadł.
+
+✅ W `dobry.yaml` obraz, port i ścieżki są jak w chartcie, a hasło jest odwołaniem do Secretu, nie jawnym tekstem.
+
+### A4. Walidacja na serwerze
 
 `--dry-run=server` wysyła plik do serwera API, który sprawdza schemat i uprawnienia, ale niczego nie tworzy.
 
@@ -51,7 +63,7 @@ kubectl apply --dry-run=server -n <login> -f lab01b/dobry.yaml
 
 ✅ `dobry.yaml` przechodzi. Błąd przy `zly.yaml` to też dobry wynik, bo walidator złapał coś, co wymyślił model.
 
-### A4. Notatki
+### A5. Notatki
 
 W `lab01b/notatki.md` zapisz trzy różnice między plikami i **jedną rzecz, której walidator nie sprawdził** (np. czy limity pamięci mają sens).
 
