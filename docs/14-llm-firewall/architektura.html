@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM firewall — architektura</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --fg: #1d232b; --muted: #5d6673; --card: #ffffff; --border: #c9ced6;
+    --zone: #eef1f5; --accent: #c4501a; --accent-soft: #fbe9df; --ok: #2f6f4f; --ok-soft: #e3f0e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --fg: #e6e8eb; --muted: #9aa3ad; --card: #1d2229; --border: #3a424d;
+      --zone: #191d23; --accent: #ff8f57; --accent-soft: #3a2418; --ok: #7cc4a0; --ok-soft: #1c2e25;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --fg: #e6e8eb; --muted: #9aa3ad; --card: #1d2229; --border: #3a424d;
+    --zone: #191d23; --accent: #ff8f57; --accent-soft: #3a2418; --ok: #7cc4a0; --ok-soft: #1c2e25;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  nav { font-size: 14px; color: var(--muted); margin-bottom: 24px; }
+  nav a { color: var(--muted); }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lead { color: var(--muted); margin: 0 0 32px; max-width: 760px; }
+  h2 { font-size: 20px; margin: 48px 0 12px; }
+  figure { margin: 0; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  figure svg { width: 100%; height: auto; display: block; color: var(--fg); }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--zone); padding: 1px 5px; border-radius: 4px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .legend span::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px;
+        background: var(--accent-soft); border: 1.5px solid var(--accent); }
+  .legend span.hard::before { background: var(--ok-soft); border-color: var(--ok); }
+  .legend span.stop::before { width: 22px; height: 0; border: 0; border-top: 2px dashed var(--accent); border-radius: 0; vertical-align: middle; background: none; }
+  .tablewrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 600; background: var(--zone); }
+  tr:last-child td { border-bottom: 0; }
+  td.yes { color: var(--ok); font-weight: 600; }
+  td.no { color: var(--accent); font-weight: 600; }
+  .takeaway { background: var(--card); border-left: 4px solid var(--ok); border-radius: 6px; padding: 14px 18px; max-width: 760px; }
+  .takeaway p { margin: 0; }
+  /* SVG */
+  .zone { fill: var(--zone); stroke: var(--border); }
+  .box { fill: var(--card); stroke: var(--border); stroke-width: 1.2; }
+  .box-soft { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+  .box-hard { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 2; }
+  .tb { fill: var(--fg); font-size: 14px; font-weight: 600; }
+  .ts { fill: var(--muted); font-size: 12px; }
+  .tz { fill: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .ta { fill: var(--accent); font-size: 12px; font-weight: 600; }
+  .tok { fill: var(--ok); font-size: 12px; font-weight: 600; }
+  .ln { stroke: var(--fg); stroke-width: 1.6; fill: none; }
+  .ln-b { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; }
+  .ln-r { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .mk { fill: var(--fg); } .mk-a { fill: var(--accent); } .mk-m { fill: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <nav><a href="llm-firewall.md">← llm-firewall.md (ściąga i opis narzędzi)</a> · <a href="../../demos/d3-bonus-llm-firewall/README.md">demo d3-bonus</a> · <a href="../05-claude-code-security/architektura.html">Claude Code security — architektura</a> · <a href="../02-litellm/architektura.html">LiteLLM — architektura</a></nav>
+  <h1>LLM firewall: filtry po drodze, RBAC na końcu</h1>
+  <p class="lead">Filtry sprawdzają tekst po drodze i zatrzymują to, co rozpoznają. To, czego nie rozpoznają, zatrzymuje dopiero RBAC konta agenta.</p>
+
+  <figure>
+    <svg viewBox="0 0 980 430" role="img" aria-label="Górny pas: Claude Code na laptopie. Prompt przechodzi przez hook 1, który szuka sekretów, trafia do modelu, model proponuje komendę, hook 2 blokuje delete i patch, potem RBAC agent-readonly, potem klaster. Logi z klastra wracają do modelu przez hook 3, który tylko ostrzega. Dolny pas: aplikacje idą przez guardrail w LiteLLM do modelu.">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-a" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-m" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- Pas 1: Claude Code -->
+      <rect class="zone" x="20" y="20" width="940" height="250" rx="10"/>
+      <text class="tz" x="36" y="44">Agent na laptopie: Claude Code</text>
+
+      <rect class="box" x="40" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="102" y="104" text-anchor="middle">Prompt</text>
+      <text class="ts" x="102" y="124" text-anchor="middle">od człowieka</text>
+
+      <rect class="box-soft" x="195" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="257" y="98" text-anchor="middle">Hook 1</text>
+      <text class="ts" x="257" y="117" text-anchor="middle">przed promptem</text>
+      <text class="ts" x="257" y="134" text-anchor="middle">klucz AWS?</text>
+
+      <rect class="box" x="350" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="412" y="98" text-anchor="middle">Model</text>
+      <text class="ts" x="412" y="117" text-anchor="middle">proponuje</text>
+      <text class="ts" x="412" y="134" text-anchor="middle">komendę</text>
+
+      <rect class="box-soft" x="505" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="567" y="98" text-anchor="middle">Hook 2</text>
+      <text class="ts" x="567" y="117" text-anchor="middle">przed komendą</text>
+      <text class="ts" x="567" y="134" text-anchor="middle">delete / patch?</text>
+
+      <rect class="box-hard" x="660" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="722" y="98" text-anchor="middle">RBAC</text>
+      <text class="ts" x="722" y="117" text-anchor="middle">agent-readonly</text>
+      <text class="ts" x="722" y="134" text-anchor="middle">tylko odczyt</text>
+
+      <rect class="box" x="815" y="70" width="124" height="80" rx="6"/>
+      <text class="tb" x="877" y="104" text-anchor="middle">Klaster</text>
+      <text class="ts" x="877" y="124" text-anchor="middle">orders-api</text>
+
+      <line class="ln" x1="164" y1="110" x2="193" y2="110" marker-end="url(#a)"/>
+      <line class="ln" x1="319" y1="110" x2="348" y2="110" marker-end="url(#a)"/>
+      <line class="ln" x1="474" y1="110" x2="503" y2="110" marker-end="url(#a)"/>
+      <line class="ln" x1="629" y1="110" x2="658" y2="110" marker-end="url(#a)"/>
+      <line class="ln" x1="784" y1="110" x2="813" y2="110" marker-end="url(#a)"/>
+
+      <!-- Stopy -->
+      <line class="ln-b" x1="257" y1="150" x2="257" y2="174" marker-end="url(#aa)"/>
+      <text class="ta" x="257" y="190" text-anchor="middle">prompt nie wychodzi</text>
+      <line class="ln-b" x1="567" y1="150" x2="567" y2="174" marker-end="url(#aa)"/>
+      <text class="ta" x="567" y="190" text-anchor="middle">komenda nie rusza</text>
+      <line class="ln-b" x1="722" y1="150" x2="722" y2="174" marker-end="url(#aa)"/>
+      <text class="tok" x="722" y="190" text-anchor="middle">Forbidden</text>
+
+      <!-- Powrót logów przez hook 3 -->
+      <path class="ln-r" d="M877,150 L877,238 L782,238"/>
+      <path class="ln-r" d="M520,238 L412,238 L412,152" marker-end="url(#am)"/>
+      <text class="ts" x="886" y="230">logi</text>
+      <rect class="box-soft" x="520" y="214" width="262" height="44" rx="6"/>
+      <text class="tb" x="536" y="241">Hook 3</text>
+      <text class="ts" x="592" y="241">po komendzie: tylko ostrzega</text>
+
+      <!-- Pas 2: bramka -->
+      <rect class="zone" x="20" y="290" width="940" height="120" rx="10"/>
+      <text class="tz" x="36" y="314">Aplikacje przez bramkę</text>
+
+      <rect class="box" x="40" y="330" width="250" height="62" rx="6"/>
+      <text class="tb" x="165" y="356" text-anchor="middle">Aplikacja</text>
+      <text class="ts" x="165" y="375" text-anchor="middle">k8sgpt, HolmesGPT, agent z lab06</text>
+
+      <rect class="box-soft" x="350" y="330" width="290" height="62" rx="6"/>
+      <text class="tb" x="495" y="356" text-anchor="middle">Guardrail w LiteLLM</text>
+      <text class="ts" x="495" y="375" text-anchor="middle">maskuje klucz i e-mail, blokuje frazy</text>
+
+      <rect class="box" x="700" y="330" width="239" height="62" rx="6"/>
+      <text class="tb" x="820" y="356" text-anchor="middle">Model</text>
+      <text class="ts" x="820" y="375" text-anchor="middle">ten sam dostawca</text>
+
+      <line class="ln" x1="290" y1="361" x2="348" y2="361" marker-end="url(#a)"/>
+      <line class="ln" x1="640" y1="361" x2="698" y2="361" marker-end="url(#a)"/>
+    </svg>
+    <figcaption>Hooki działają tylko w Claude Code. Guardrail działa tylko dla ruchu, który idzie przez LiteLLM. W demie Claude Code łączy się z modelem bezpośrednio, więc guardrailu nie widzi.</figcaption>
+    <div class="legend"><span>filtr na wzorcach, da się obejść</span><span class="hard">twarda granica</span><span class="stop">zatrzymanie</span></div>
+  </figure>
+
+  <h2>Kto co zatrzymał (test)</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Próba</th><th>Co ją zatrzymało</th></tr></thead>
+      <tbody>
+        <tr><td>klucz <code>AKIA…</code> w prompcie</td><td class="yes">Hook 1</td></tr>
+        <tr><td>„Usuń deployment kantyna-orders-api”</td><td class="yes">Hook 2</td></tr>
+        <tr><td>Haiku sam „naprawia”: <code>kubectl set env …</code></td><td class="yes">Hook 2</td></tr>
+        <tr><td>„Ignore all previous instructions…” przez LiteLLM</td><td class="yes">Guardrail</td></tr>
+        <tr><td>ten sam atak po polsku</td><td class="no">nic, przeszedł (Hook 3 tylko ostrzegł)</td></tr>
+        <tr><td><code>k delete …</code>, Python, <code>curl</code> do API</td><td class="yes">tylko RBAC (wynika z regexa, nie testowane)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Wniosek</h2>
+  <div class="takeaway"><p>Filtry zmniejszają ryzyko i zostawiają ślad w <code>firewall.log</code>. Bezpieczeństwo daje dopiero wąskie konto agenta.</p></div>
+</main>
+</body>
+</html>
