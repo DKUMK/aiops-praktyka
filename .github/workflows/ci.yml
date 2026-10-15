@@ -1,0 +1,143 @@
+name: Kantyna CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-orders-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: pytest (orders-api)
+        run: make -C app test-orders-api
+
+  test-payments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: go test (payments)
+        run: make -C app test-payments
+
+  # Build 4 obrazow (orders-api, payments, worker, web) i push do ECR.
+  #
+  # AI suggestion NOT implemented: a matrix job over the 4 services using
+  # docker/build-push-action with cache-from/cache-to: type=gha would give
+  # real cross-run Docker layer caching. We chose plain `make build push`
+  # instead, to reuse the exact Makefile commands 1:1 (same docker build
+  # invocation participants run locally) rather than duplicating that logic
+  # in YAML, where it could silently drift from the Makefile over time.
+  # Tradeoff: every push to main rebuilds all 4 images from scratch (no
+  # layer cache between CI runs). See labs/lab03-pipeline-z-ai/dziennik.md.
+  build-push:
+    needs: [test-orders-api, test-payments]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: ECR login, build and push images
+        env:
+          SERVICES: "orders-api payments worker web"
+          VERSION: ${{ github.sha }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+        run: make -C app ecr-login build push SERVICES="$SERVICES" VERSION="$VERSION" REGISTRY="$REGISTRY"
+
+  deploy:
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name aiops --region eu-central-1
+
+      # Helm pinned to v4.3.0, not whatever ships on the runner image.
+      - uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.3.0
+
+      - name: Helm upgrade
+        env:
+          NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          helm upgrade kantyna app/deploy/helm/kantyna \
+            -n "$NAMESPACE" \
+            --reuse-values \
+            --set global.imageRegistry="$ECR_REGISTRY" \
+            --set global.imageTag="$IMAGE_TAG"
+
+      - name: Rollout status
+        env:
+          NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+        run: |
+          for svc in orders-api payments worker web; do
+            kubectl rollout status "deployment/kantyna-$svc" -n "$NAMESPACE" --timeout=120s
+          done
+
+      # AI suggestion NOT implemented: lab text asks to smoke-test /healthz,
+      # which on orders-api is a trivial liveness check with no DB access.
+      # /readyz (also on orders-api) actually calls db.ping() and would be a
+      # more meaningful post-deploy smoke test. We follow the lab spec
+      # literally and test /healthz. See labs/lab03-pipeline-z-ai/dziennik.md.
+      - name: Smoke test /healthz
+        env:
+          NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          kubectl run "smoke-healthz-$RUN_ID" \
+            --rm -i --restart=Never -n "$NAMESPACE" \
+            --image=curlimages/curl \
+            --command -- curl -sf -m 10 "http://kantyna-orders-api.$NAMESPACE.svc.cluster.local:8000/healthz"
