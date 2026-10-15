@@ -132,6 +132,10 @@ jobs:
       # /readyz (also on orders-api) actually calls db.ping() and would be a
       # more meaningful post-deploy smoke test. We follow the lab spec
       # literally and test /healthz. See labs/lab03-pipeline-z-ai/dziennik.md.
+      # NetworkPolicy "kantyna-orders-api-ingress" (artefakt lab02, label
+      # aiops/lab=lab02) dopuszcza na porcie 8000 tylko pody z labelem
+      # app.kubernetes.io/name=web - stad ten label na podzie smoke-testu,
+      # inaczej polaczenie wisi w ciszy (curl exit 28, nie "connection refused").
       - name: Smoke test /healthz
         env:
           NAMESPACE: ${{ vars.K8S_NAMESPACE }}
@@ -140,4 +144,5 @@ jobs:
           kubectl run "smoke-healthz-$RUN_ID" \
             --rm -i --restart=Never -n "$NAMESPACE" \
             --image=curlimages/curl \
+            --labels="app.kubernetes.io/name=web" \
             --command -- curl -sf -m 10 "http://kantyna-orders-api.$NAMESPACE.svc.cluster.local:8000/healthz"
